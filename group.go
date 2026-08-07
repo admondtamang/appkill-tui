@@ -140,6 +140,7 @@ type displayRow struct {
 	disk       float64
 	ports      []uint32
 	runtimes   []string
+	last       bool // rowChild: true if this is the last child of its group (tree connector)
 }
 
 func flattenRows(groups []procGroup, expanded map[string]bool) []displayRow {
@@ -155,8 +156,8 @@ func flattenRows(groups []procGroup, expanded map[string]bool) []displayRow {
 			ports: uniquePorts(g.procs), runtimes: uniqueRuntimes(g.procs),
 		})
 		if expanded[g.name] {
-			for _, p := range g.procs {
-				rows = append(rows, displayRow{kind: rowChild, name: g.name, proc: p})
+			for i, p := range g.procs {
+				rows = append(rows, displayRow{kind: rowChild, name: g.name, proc: p, last: i == len(g.procs)-1})
 			}
 		}
 	}

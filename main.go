@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"syscall"
@@ -18,6 +19,7 @@ const (
 	minRefreshInterval     = 1 * time.Second
 	maxRefreshInterval     = 60 * time.Second
 	refreshStep            = 1 * time.Second
+	barSlots               = 16
 )
 
 type sortMode int
@@ -48,11 +50,13 @@ var (
 	colorSelBg  = lipgloss.Color("#1e293b")
 	headerStyle = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	footerStyle = lipgloss.NewStyle().Foreground(colorMuted)
+	footerLabel = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	selectedRow = lipgloss.NewStyle().Background(colorSelBg).Bold(true)
 	statusStyle = lipgloss.NewStyle().Foreground(colorGood).Bold(true)
 	deniedStyle = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 	groupStyle  = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
 	colHeader   = lipgloss.NewStyle().Bold(true).Underline(true)
+	mutedGlyph  = lipgloss.NewStyle().Foreground(colorMuted)
 )
 
 func levelColor(v, warnAt, badAt float64) lipgloss.Color {
@@ -66,20 +70,29 @@ func levelColor(v, warnAt, badAt float64) lipgloss.Color {
 	}
 }
 
-// pieGlyph renders a percentage as a partial-circle "pie" character.
-func pieGlyph(pct float64) string {
-	switch {
-	case pct >= 87.5:
-		return "●"
-	case pct >= 62.5:
-		return "◕"
-	case pct >= 37.5:
-		return "◑"
-	case pct >= 12.5:
-		return "◔"
-	default:
-		return "○"
+// padDisplay pads/truncates by terminal column width (not byte/rune count),
+// so emoji and wide glyphs don't throw off fixed-width table alignment.
+func padDisplay(s string, width int) string {
+	w := lipgloss.Width(s)
+	if w > width {
+		r := []rune(s)
+		for len(r) > 0 && lipgloss.Width(string(r)) > width {
+			r = r[:len(r)-1]
+		}
+		return string(r)
 	}
+	return s + strings.Repeat(" ", width-w)
+}
+
+func progressBar(pct float64, warnAt, badAt float64) string {
+	filled := min(max(int(math.Round(pct/100*barSlots)), 0), barSlots)
+	color := levelColor(pct, warnAt, badAt)
+	return lipgloss.NewStyle().Foreground(color).Render(strings.Repeat("|", filled)) +
+		mutedGlyph.Render(strings.Repeat("·", barSlots-filled))
+}
+
+func pctColored(v, warnAt, badAt float64) string {
+	return lipgloss.NewStyle().Foreground(levelColor(v, warnAt, badAt)).Render(fmt.Sprintf("%5.1f%%", v))
 }
 
 func runtimeEmoji(rt string) string {
@@ -114,19 +127,6 @@ func statCells(cpu, ram, disk float64) (string, string, string) {
 	ramStr := lipgloss.NewStyle().Foreground(levelColor(ram, 200, 800)).Render(fmt.Sprintf("%8.1f", ram))
 	diskStr := fmt.Sprintf("%9.1f", disk)
 	return cpuStr, ramStr, diskStr
-}
-
-func renderTabs(active filterMode) string {
-	labels := []string{"All", "🔌 Ports", "🧩 Apps"}
-	parts := make([]string, len(labels))
-	for i, l := range labels {
-		if filterMode(i) == active {
-			parts[i] = groupStyle.Render("[" + l + "]")
-		} else {
-			parts[i] = footerStyle.Render(l)
-		}
-	}
-	return strings.Join(parts, "  ")
 }
 
 func stateEmoji(p ProcInfo) string {
@@ -323,27 +323,61 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func pad(s string, width int) string {
-	if len(s) > width {
-		return s[:width]
+// renderDashboard draws the bordered header box: CPU/RAM/DISK progress bars
+// on the left, Sort/View/Filter state on the right.
+func (m model) renderDashboard(width int) string {
+	const leftWidth = 34
+	rightWidth := max(width-7-leftWidth, 10)
+	innerWidth := leftWidth + rightWidth + 3 // " │ " divider
+
+	title := "── appkill "
+	top := "╭" + title + strings.Repeat("─", max(innerWidth+2-lipgloss.Width(title), 0)) + "╮"
+	bottom := "╰" + strings.Repeat("─", innerWidth+2) + "╯"
+
+	leftLines := [3]string{
+		fmt.Sprintf("💻 CPU [%s] %s", progressBar(m.overview.CPUPercent, 50, 85), pctColored(m.overview.CPUPercent, 50, 85)),
+		fmt.Sprintf("🧠 RAM [%s] %s", progressBar(m.overview.MemPercent, 60, 90), pctColored(m.overview.MemPercent, 60, 90)),
+		fmt.Sprintf("💿 DSK [%s] %s", progressBar(m.overview.DiskPercent, 70, 90), pctColored(m.overview.DiskPercent, 70, 90)),
 	}
-	return fmt.Sprintf("%-*s", width, s)
+
+	labels := []string{"All", "🔌 Ports", "🧩 Apps"}
+	var others []string
+	for i, l := range labels {
+		if filterMode(i) != m.filter {
+			others = append(others, l)
+		}
+	}
+	rightLines := [3]string{
+		fmt.Sprintf("Sort: %s%s   ⏱ %ds", m.sortBy, map[bool]string{true: "▲", false: "▼"}[m.sortAsc], int(m.refreshInterval.Seconds())),
+		fmt.Sprintf("View: [%s]", labels[m.filter]),
+		fmt.Sprintf("Filter: %s", strings.Join(others, " │ ")),
+	}
+
+	var b strings.Builder
+	b.WriteString(top)
+	b.WriteString("\n")
+	for i := range 3 {
+		fmt.Fprintf(&b, "│ %s │ %s │\n", padDisplay(leftLines[i], leftWidth), padDisplay(rightLines[i], rightWidth))
+	}
+	b.WriteString(bottom)
+	return b.String()
 }
 
-func (m model) renderOverview() string {
-	cpu := pieGlyph(m.overview.CPUPercent)
-	ram := pieGlyph(m.overview.MemPercent)
-	disk := pieGlyph(m.overview.DiskPercent)
-	line := fmt.Sprintf(
-		"🖥️  CPU %s %s   🧠 RAM %s %s   💽 DISK %s %s",
-		lipgloss.NewStyle().Foreground(levelColor(m.overview.CPUPercent, 50, 85)).Render(cpu),
-		fmt.Sprintf("%5.1f%%", m.overview.CPUPercent),
-		lipgloss.NewStyle().Foreground(levelColor(m.overview.MemPercent, 60, 90)).Render(ram),
-		fmt.Sprintf("%5.1f%%", m.overview.MemPercent),
-		lipgloss.NewStyle().Foreground(levelColor(m.overview.DiskPercent, 70, 90)).Render(disk),
-		fmt.Sprintf("%5.1f%%", m.overview.DiskPercent),
-	)
-	return line
+// renderFooter draws the categorized Nav/Act/Sort keybinding block with a
+// right-aligned pagination indicator on the first line.
+func (m model) renderFooter(width, start, end, total int) string {
+	nav := footerLabel.Render("Nav:") + footerStyle.Render("  ↑/↓ Move │ / Search │ Enter Expand/Collapse │ Tab Filter")
+	act := footerLabel.Render("Act:") + footerStyle.Render("  x Kill │ +/- Refresh Rate │ q Quit")
+	sortLine := footerLabel.Render("Sort:") + footerStyle.Render(" s Sort │ S Reverse")
+
+	showing := ""
+	if total > 0 {
+		showing = footerStyle.Render(fmt.Sprintf("Showing: %d-%d of %d", start+1, end, total))
+	}
+	gap := max(width-lipgloss.Width(nav)-lipgloss.Width(showing), 2)
+	nav += strings.Repeat(" ", gap) + showing
+
+	return strings.Join([]string{nav, act, sortLine}, "\n")
 }
 
 func (m model) View() string {
@@ -353,42 +387,36 @@ func (m model) View() string {
 	}
 
 	var b strings.Builder
+	b.WriteString(m.renderDashboard(width))
+	b.WriteString("\n")
 
 	spin := ""
 	if m.loading {
 		spin = " " + m.spinner.View()
 	}
-	b.WriteString(headerStyle.Render("⚡ appkill"))
-	b.WriteString(spin)
-	b.WriteString("  ")
-	b.WriteString(footerStyle.Render(fmt.Sprintf("sort: %s%s", m.sortBy, map[bool]string{true: "▲", false: "▼"}[m.sortAsc])))
-	b.WriteString("   ")
-	b.WriteString(footerStyle.Render(fmt.Sprintf("⏱ %ds", int(m.refreshInterval.Seconds()))))
-	b.WriteString("   ")
-	b.WriteString(renderTabs(m.filter))
-	b.WriteString("\n")
-	b.WriteString(m.renderOverview())
-	b.WriteString("\n\n")
-
 	if m.searching || m.search.Value() != "" {
+		b.WriteString("  ")
 		b.WriteString(m.search.View())
+		b.WriteString(spin)
 	} else {
-		b.WriteString(footerStyle.Render("press / to search"))
+		b.WriteString(footerStyle.Render("  / Search..."))
+		b.WriteString(spin)
 	}
 	b.WriteString("\n\n")
 
-	// reserved width: state emoji(2) runtime emoji(2) pid(9) cpu(8) ram(10) disk(11) ports(14) + spacing(7)
-	reserved := 2 + 2 + 9 + 8 + 10 + 11 + 14 + 7
+	// reserved width: pid(9) icons(6) cpu(7) ram(9) disk(10) ports(22) + spacing(6)
+	reserved := 9 + 6 + 7 + 9 + 10 + 22 + 6
 	nameWidth := max(width-reserved, 12)
 
-	b.WriteString(colHeader.Render(fmt.Sprintf("      %-8s %s %7s %9s %10s  %s", "PID", pad("NAME", nameWidth), "CPU%", "RAM MB", "DISK KB", "PORTS")))
+	b.WriteString(colHeader.Render(fmt.Sprintf("  %s %s %s %7s %9s %10s  %s",
+		padDisplay("PID", 8), padDisplay("", 5), padDisplay("NAME", nameWidth), "CPU%", "RAM MB", "DISK KB", "PORTS")))
+	b.WriteString("\n")
+	rule := strings.Repeat("─", width)
+	b.WriteString(footerStyle.Render(rule))
 	b.WriteString("\n")
 
 	rows := m.rows()
-	maxRows := 20
-	if m.height > 14 {
-		maxRows = m.height - 14
-	}
+	maxRows := max(m.height-18, 5)
 	start := 0
 	if m.cursor >= maxRows {
 		start = m.cursor - maxRows + 1
@@ -400,36 +428,54 @@ func (m model) View() string {
 
 	for i := start; i < end; i++ {
 		r := rows[i]
-		var line string
+		var pidStr, icons, namePart string
+		var cpu, ram, disk float64
+		var ports []uint32
 		switch r.kind {
 		case rowGroup:
 			arrow := "▸"
 			if m.expanded[r.name] {
 				arrow = "▾"
 			}
-			label := pad(fmt.Sprintf("%s %s ×%d", arrow, r.name, r.count), nameWidth)
-			cpuStr, ramStr, diskStr := statCells(r.cpu, r.ram, r.disk)
 			rt := make([]string, len(r.runtimes))
 			for i, x := range r.runtimes {
 				rt[i] = runtimeEmoji(x)
 			}
-			line = fmt.Sprintf("📦 %-2s %-8s %s %s %s %s  %s", strings.Join(rt, ""), "", groupStyle.Render(label), cpuStr, ramStr, diskStr, formatPorts(r.ports))
+			pidStr = "---"
+			icons = "📦" + strings.Join(rt, "")
+			namePart = groupStyle.Render(fmt.Sprintf("%s %s (%d)", arrow, r.name, r.count))
+			cpu, ram, disk, ports = r.cpu, r.ram, r.disk, r.ports
 		case rowChild:
 			p := r.proc
-			cpuStr, ramStr, diskStr := statCells(p.CPU, p.RSSMB, p.DiskKBs)
-			label := pad("  ↳", nameWidth)
-			line = fmt.Sprintf("%s %-2s %-8d %s %s %s %s  %s", stateEmoji(p), runtimeEmoji(p.Runtime), p.PID, label, cpuStr, ramStr, diskStr, formatPorts(p.Ports))
+			connector := "├─"
+			if r.last {
+				connector = "└─"
+			}
+			pidStr = fmt.Sprint(p.PID)
+			icons = stateEmoji(p) + runtimeEmoji(p.Runtime)
+			name := connector + " " + p.Name
+			if p.Denied {
+				name = deniedStyle.Render(name)
+			}
+			namePart = name
+			cpu, ram, disk, ports = p.CPU, p.RSSMB, p.DiskKBs, p.Ports
 		default:
 			p := r.proc
-			cpuStr, ramStr, diskStr := statCells(p.CPU, p.RSSMB, p.DiskKBs)
+			pidStr = fmt.Sprint(p.PID)
+			icons = stateEmoji(p) + runtimeEmoji(p.Runtime)
 			name := p.Name
 			if p.Denied {
-				name = deniedStyle.Render(pad(name, nameWidth))
-			} else {
-				name = pad(name, nameWidth)
+				name = deniedStyle.Render(name)
 			}
-			line = fmt.Sprintf("%s %-2s %-8d %s %s %s %s  %s", stateEmoji(p), runtimeEmoji(p.Runtime), p.PID, name, cpuStr, ramStr, diskStr, formatPorts(p.Ports))
+			namePart = name
+			cpu, ram, disk, ports = p.CPU, p.RSSMB, p.DiskKBs, p.Ports
 		}
+
+		cpuStr, ramStr, diskStr := statCells(cpu, ram, disk)
+		line := fmt.Sprintf("  %s %s %s %s %s %s  %s",
+			padDisplay(pidStr, 8), padDisplay(icons, 5), padDisplay(namePart, nameWidth),
+			cpuStr, ramStr, diskStr, formatPorts(ports))
+
 		if i == m.cursor {
 			line = selectedRow.Render(line)
 		}
@@ -437,16 +483,13 @@ func (m model) View() string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString(footerStyle.Render(rule))
 	b.WriteString("\n")
 	if m.status != "" && time.Since(m.statusAt) < 4*time.Second {
 		b.WriteString(statusStyle.Render(m.status))
 		b.WriteString("\n")
 	}
-	scrollInfo := ""
-	if len(rows) > maxRows {
-		scrollInfo = fmt.Sprintf("  (%d-%d of %d)", start+1, end, len(rows))
-	}
-	b.WriteString(footerStyle.Render("↑/↓ move · / search · s sort · S reverse · tab filter · +/- refresh rate · enter expand/collapse · x kill · q quit" + scrollInfo))
+	b.WriteString(m.renderFooter(width, start, end, len(rows)))
 
 	return b.String()
 }
