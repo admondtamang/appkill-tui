@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"fmt"
@@ -494,7 +494,8 @@ func (m model) View() string {
 	return b.String()
 }
 
-func main() {
+// Run starts the TUI. Both the appkill and appkill-tui commands call this.
+func Run() {
 	p := tea.NewProgram(initialModel(), tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "error:", err)

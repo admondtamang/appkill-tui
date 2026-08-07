@@ -51,21 +51,45 @@ Sort: s Sort │ S Reverse
 
 ## Install
 
+The app ships as two identical commands, `appkill` and `appkill-tui` — use
+whichever you like.
+
 ```sh
-go install github.com/admondtamang/taskmanger-tui@latest
+go install github.com/admondtamang/appkill-tui/cmd/appkill@latest
+go install github.com/admondtamang/appkill-tui/cmd/appkill-tui@latest
 ```
 
-Or build from source:
+(The GitHub repo is currently named `appkill-tui` — a typo, not yet
+renamed — that's what makes the import path above look odd.)
+
+Or build both from source:
 
 ```sh
-git clone git@github.com:admondtamang/taskmanger-tui.git
-cd taskmanger-tui
-go build -o appkill-tui .
-./appkill-tui
+git clone git@github.com:admondtamang/appkill-tui.git
+cd appkill-tui
+go build -o appkill ./cmd/appkill
+go build -o appkill-tui ./cmd/appkill-tui
+```
+
+### After installation
+
+`go install` places the binaries in `$(go env GOPATH)/bin` (usually
+`~/go/bin`). Make sure that directory is on your `PATH`:
+
+```sh
+export PATH="$PATH:$(go env GOPATH)/bin"
+```
+
+Then launch the app with either:
+
+```sh
+appkill
+# or
+appkill-tui
 ```
 
 Some processes (owned by other users) hide their I/O and cgroup info, and
-can't be killed, unless you run `sudo ./appkill-tui`.
+can't be killed, unless you run it with `sudo`.
 
 ## Keybindings
 
@@ -83,14 +107,19 @@ can't be killed, unless you run `sudo ./appkill-tui`.
 
 ## Project layout
 
-| File          | Responsibility                                      |
-|---------------|------------------------------------------------------|
-| `main.go`     | Bubble Tea model, keybindings, and rendering         |
-| `process.go`  | Per-process stats via `gopsutil`                     |
-| `group.go`    | Grouping, sorting, filtering, and row flattening     |
-| `network.go`  | Listening-port lookup                                |
-| `runtime.go`  | Docker/Kubernetes/host detection via cgroups         |
-| `system.go`   | System-wide CPU/RAM/disk usage                       |
+| Path                        | Responsibility                                  |
+|-----------------------------|--------------------------------------------------|
+| `cmd/appkill/main.go`       | Thin entry point for the `appkill` command       |
+| `cmd/appkill-tui/main.go`   | Thin entry point for the `appkill-tui` command   |
+| `internal/app/app.go`       | Bubble Tea model, keybindings, and rendering     |
+| `internal/app/process.go`   | Per-process stats via `gopsutil`                 |
+| `internal/app/group.go`     | Grouping, sorting, filtering, and row flattening |
+| `internal/app/network.go`   | Listening-port lookup                            |
+| `internal/app/runtime.go`   | Docker/Kubernetes/host detection via cgroups     |
+| `internal/app/system.go`    | System-wide CPU/RAM/disk usage                   |
+
+Both commands are thin wrappers around `internal/app.Run()` — same
+application, two names.
 
 ## Contributing
 

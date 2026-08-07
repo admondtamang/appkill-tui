@@ -1,4 +1,4 @@
-module github.com/admondtamang/taskmanger-tui
+module github.com/admondtamang/appkill-tui
 
 go 1.26.5
 
