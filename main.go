@@ -13,7 +13,12 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-const refreshInterval = 6 * time.Second
+const (
+	defaultRefreshInterval = 10 * time.Second
+	minRefreshInterval     = 1 * time.Second
+	maxRefreshInterval     = 60 * time.Second
+	refreshStep            = 1 * time.Second
+)
 
 type sortMode int
 
@@ -144,8 +149,8 @@ type tickMsg time.Time
 type procsMsg []ProcInfo
 type overviewMsg Overview
 
-func tickCmd() tea.Cmd {
-	return tea.Tick(refreshInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+func tickCmd(interval time.Duration) tea.Cmd {
+	return tea.Tick(interval, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func refreshCmd() tea.Cmd {
@@ -157,21 +162,22 @@ func overviewCmd() tea.Cmd {
 }
 
 type model struct {
-	all       []ProcInfo
-	overview  Overview
-	expanded  map[string]bool
-	cursor    int
-	sortBy    sortMode
-	sortAsc   bool
-	filter    filterMode
-	search    textinput.Model
-	searching bool
-	spinner   spinner.Model
-	loading   bool
-	status    string
-	statusAt  time.Time
-	width     int
-	height    int
+	all             []ProcInfo
+	overview        Overview
+	expanded        map[string]bool
+	cursor          int
+	sortBy          sortMode
+	sortAsc         bool
+	filter          filterMode
+	refreshInterval time.Duration
+	search          textinput.Model
+	searching       bool
+	spinner         spinner.Model
+	loading         bool
+	status          string
+	statusAt        time.Time
+	width           int
+	height          int
 }
 
 func initialModel() model {
@@ -184,16 +190,17 @@ func initialModel() model {
 	sp.Style = lipgloss.NewStyle().Foreground(colorAccent)
 
 	return model{
-		search:   ti,
-		spinner:  sp,
-		sortBy:   sortCPU,
-		loading:  true,
-		expanded: map[string]bool{},
+		search:          ti,
+		spinner:         sp,
+		sortBy:          sortCPU,
+		loading:         true,
+		expanded:        map[string]bool{},
+		refreshInterval: defaultRefreshInterval,
 	}
 }
 
 func (m model) Init() tea.Cmd {
-	return tea.Batch(refreshCmd(), overviewCmd(), tickCmd(), m.spinner.Tick)
+	return tea.Batch(refreshCmd(), overviewCmd(), tickCmd(m.refreshInterval), m.spinner.Tick)
 }
 
 func (m model) rows() []displayRow {
@@ -226,7 +233,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		m.loading = true
-		return m, tea.Batch(refreshCmd(), overviewCmd(), tickCmd())
+		return m, tea.Batch(refreshCmd(), overviewCmd(), tickCmd(m.refreshInterval))
 
 	case overviewMsg:
 		m.overview = Overview(msg)
@@ -278,6 +285,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "tab":
 			m.filter = (m.filter + 1) % 3
 			m.cursor = 0
+		case "+", "=":
+			m.refreshInterval = min(m.refreshInterval+refreshStep, maxRefreshInterval)
+		case "-", "_":
+			m.refreshInterval = max(m.refreshInterval-refreshStep, minRefreshInterval)
 		case "enter":
 			rows := m.rows()
 			if m.cursor < len(rows) && rows[m.cursor].kind == rowGroup {
@@ -352,6 +363,8 @@ func (m model) View() string {
 	b.WriteString("  ")
 	b.WriteString(footerStyle.Render(fmt.Sprintf("sort: %s%s", m.sortBy, map[bool]string{true: "▲", false: "▼"}[m.sortAsc])))
 	b.WriteString("   ")
+	b.WriteString(footerStyle.Render(fmt.Sprintf("⏱ %ds", int(m.refreshInterval.Seconds()))))
+	b.WriteString("   ")
 	b.WriteString(renderTabs(m.filter))
 	b.WriteString("\n")
 	b.WriteString(m.renderOverview())
@@ -395,31 +408,27 @@ func (m model) View() string {
 				arrow = "▾"
 			}
 			label := pad(fmt.Sprintf("%s %s ×%d", arrow, r.name, r.count), nameWidth)
-			cpuStr := lipgloss.NewStyle().Foreground(levelColor(r.cpu, 20, 60)).Render(fmt.Sprintf("%6.1f", r.cpu))
-			ramStr := lipgloss.NewStyle().Foreground(levelColor(r.ram, 200, 800)).Render(fmt.Sprintf("%8.1f", r.ram))
-			diskStr := fmt.Sprintf("%9.1f", r.disk)
-			line = fmt.Sprintf("📦 %-8s %s %s %s %s", "", groupStyle.Render(label), cpuStr, ramStr, diskStr)
+			cpuStr, ramStr, diskStr := statCells(r.cpu, r.ram, r.disk)
+			rt := make([]string, len(r.runtimes))
+			for i, x := range r.runtimes {
+				rt[i] = runtimeEmoji(x)
+			}
+			line = fmt.Sprintf("📦 %-2s %-8s %s %s %s %s  %s", strings.Join(rt, ""), "", groupStyle.Render(label), cpuStr, ramStr, diskStr, formatPorts(r.ports))
 		case rowChild:
 			p := r.proc
-			emoji := stateEmoji(p)
-			cpuStr := lipgloss.NewStyle().Foreground(levelColor(p.CPU, 20, 60)).Render(fmt.Sprintf("%6.1f", p.CPU))
-			ramStr := lipgloss.NewStyle().Foreground(levelColor(p.RSSMB, 200, 800)).Render(fmt.Sprintf("%8.1f", p.RSSMB))
-			diskStr := fmt.Sprintf("%9.1f", p.DiskKBs)
+			cpuStr, ramStr, diskStr := statCells(p.CPU, p.RSSMB, p.DiskKBs)
 			label := pad("  ↳", nameWidth)
-			line = fmt.Sprintf("%s %-8d %s %s %s %s", emoji, p.PID, label, cpuStr, ramStr, diskStr)
+			line = fmt.Sprintf("%s %-2s %-8d %s %s %s %s  %s", stateEmoji(p), runtimeEmoji(p.Runtime), p.PID, label, cpuStr, ramStr, diskStr, formatPorts(p.Ports))
 		default:
 			p := r.proc
-			emoji := stateEmoji(p)
-			cpuStr := lipgloss.NewStyle().Foreground(levelColor(p.CPU, 20, 60)).Render(fmt.Sprintf("%6.1f", p.CPU))
-			ramStr := lipgloss.NewStyle().Foreground(levelColor(p.RSSMB, 200, 800)).Render(fmt.Sprintf("%8.1f", p.RSSMB))
-			diskStr := fmt.Sprintf("%9.1f", p.DiskKBs)
+			cpuStr, ramStr, diskStr := statCells(p.CPU, p.RSSMB, p.DiskKBs)
 			name := p.Name
 			if p.Denied {
 				name = deniedStyle.Render(pad(name, nameWidth))
 			} else {
 				name = pad(name, nameWidth)
 			}
-			line = fmt.Sprintf("%s %-8d %s %s %s %s", emoji, p.PID, name, cpuStr, ramStr, diskStr)
+			line = fmt.Sprintf("%s %-2s %-8d %s %s %s %s  %s", stateEmoji(p), runtimeEmoji(p.Runtime), p.PID, name, cpuStr, ramStr, diskStr, formatPorts(p.Ports))
 		}
 		if i == m.cursor {
 			line = selectedRow.Render(line)
@@ -437,7 +446,7 @@ func (m model) View() string {
 	if len(rows) > maxRows {
 		scrollInfo = fmt.Sprintf("  (%d-%d of %d)", start+1, end, len(rows))
 	}
-	b.WriteString(footerStyle.Render("↑/↓ move · / search · s sort · S reverse · enter expand/collapse · x kill · q quit" + scrollInfo))
+	b.WriteString(footerStyle.Render("↑/↓ move · / search · s sort · S reverse · tab filter · +/- refresh rate · enter expand/collapse · x kill · q quit" + scrollInfo))
 
 	return b.String()
 }
