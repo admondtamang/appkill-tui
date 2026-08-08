@@ -51,23 +51,16 @@ Sort: s Sort │ S Reverse
 
 ## Install
 
-The app ships as two identical commands, `appkill` and `appkill-tui` — use
-whichever you like.
-
 ```sh
 go install github.com/admondtamang/appkill-tui/cmd/appkill@latest
 ```
 
-(The GitHub repo is currently named `appkill-tui` — a typo, not yet
-renamed — that's what makes the import path above look odd.)
-
-Or build both from source:
+Or build from source:
 
 ```sh
 git clone git@github.com:admondtamang/appkill-tui.git
 cd appkill-tui
 go build -o appkill ./cmd/appkill
-go build -o appkill-tui ./cmd/appkill-tui
 ```
 
 ### After installation
@@ -79,12 +72,10 @@ go build -o appkill-tui ./cmd/appkill-tui
 export PATH="$PATH:$(go env GOPATH)/bin"
 ```
 
-Then launch the app with either:
+Then launch the app:
 
 ```sh
 appkill
-# or
-appkill-tui
 ```
 
 Some processes (owned by other users) hide their I/O and cgroup info, and
@@ -109,16 +100,12 @@ can't be killed, unless you run it with `sudo`.
 | Path                        | Responsibility                                  |
 |-----------------------------|--------------------------------------------------|
 | `cmd/appkill/main.go`       | Thin entry point for the `appkill` command       |
-| `cmd/appkill-tui/main.go`   | Thin entry point for the `appkill-tui` command   |
 | `internal/app/app.go`       | Bubble Tea model, keybindings, and rendering     |
 | `internal/app/process.go`   | Per-process stats via `gopsutil`                 |
 | `internal/app/group.go`     | Grouping, sorting, filtering, and row flattening |
 | `internal/app/network.go`   | Listening-port lookup                            |
 | `internal/app/runtime.go`   | Docker/Kubernetes/host detection via cgroups     |
 | `internal/app/system.go`    | System-wide CPU/RAM/disk usage                   |
-
-Both commands are thin wrappers around `internal/app.Run()` — same
-application, two names.
 
 ## Contributing
 
