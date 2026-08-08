@@ -56,7 +56,6 @@ whichever you like.
 
 ```sh
 go install github.com/admondtamang/appkill-tui/cmd/appkill@latest
-go install github.com/admondtamang/appkill-tui/cmd/appkill-tui@latest
 ```
 
 (The GitHub repo is currently named `appkill-tui` — a typo, not yet
